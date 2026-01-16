@@ -37,7 +37,7 @@ st.markdown("""
 # --- 3. NAVBAR ---
 st.markdown("""
     <div class="navbar">
-        <div class="nav-logo">🥑 ChefGPT Luxe</div>
+        <div class="nav-logo"> ChefGPT Luxe</div>
         <div style="display: flex; gap: 30px; font-weight: 600;">
             <span>Inventory</span><span>Recipes</span><span>Pro</span>
         </div>
