@@ -1,13 +1,38 @@
 import streamlit as st
 from PIL import Image
-
+import os
+import tempfile
+from dotenv import load_dotenv
+from langchain.chat_models import init_chat_model
 from MealAgent.execution import MealPlannerAgent
-# main llm
+
+# Load environment variables from .env file
+load_dotenv()
+
+# --- 0. INITIALIZE AGENT ---
+@st.cache_resource
+def initialize_agent():
+    """Initialize the MealPlannerAgent with Gemini model"""
+    # Get API key from environment
+    api_key = os.getenv('GOOGLE_API_KEY')
+    
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY not found. Please check your .env file.")
+    
+    # Use init_chat_model with explicit provider
+    model = init_chat_model(
+        "google_genai:gemini-3-flash-preview",  
+        temperature=0.7,
+        api_key=api_key
+    )
+    
+    agent = MealPlannerAgent(model)
+    return agent.build_graph()
 
 # --- 1. PAGE CONFIG ---
-st.set_page_config(page_title="ChefGPT Luxe", page_icon="🥑", layout="wide")
+st.set_page_config(page_title="ChefGPT Luxe", page_icon="🍳", layout="wide")
 
-# --- 2. STYLING (GLASSMORPHISM & CARDS) ---
+# --- 2. STYLING ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@400;600&display=swap');
@@ -40,21 +65,43 @@ st.markdown("""
 # --- 3. NAVBAR ---
 st.markdown("""
     <div class="navbar">
-        <div class="nav-logo"> ChefGPT Luxe</div>
+        <div class="nav-logo">🍳 ChefGPT Luxe</div>
         <div style="display: flex; gap: 30px; font-weight: 600;">
             <span>Inventory</span><span>Recipes</span><span>Pro</span>
         </div>
     </div>
 """, unsafe_allow_html=True)
 
-# --- 4. APP STATE MANAGEMENT ---
+# --- 4. STATE MANAGEMENT ---
 if "step" not in st.session_state:
     st.session_state.step = "input"
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = "thread_1"
+if "uploaded_image_path" not in st.session_state:
+    st.session_state.uploaded_image_path = None
+if "user_preferences" not in st.session_state:
+    st.session_state.user_preferences = {}
+if "clarification_data" not in st.session_state:
+    st.session_state.clarification_data = None
+if "recipe_data" not in st.session_state:
+    st.session_state.recipe_data = None
+if "detected_ingredients" not in st.session_state:
+    st.session_state.detected_ingredients = None
 
 def change_step(new_step):
     st.session_state.step = new_step
 
-# --- 5. MAIN PAGE: INPUT & UPLOAD ---
+def save_uploaded_file(uploaded_file):
+    """Save uploaded file to temporary location"""
+    if uploaded_file is not None:
+        temp_dir = tempfile.gettempdir()
+        file_path = os.path.join(temp_dir, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return file_path
+    return None
+
+# --- 5. INPUT PAGE ---
 if st.session_state.step == "input":
     st.markdown("<h1 style='text-align: center; font-family: Playfair Display; font-size: 3.5rem;'>What's cooking today?</h1>", unsafe_allow_html=True)
     
@@ -63,90 +110,276 @@ if st.session_state.step == "input":
     with col2:
         with st.container(border=True):
             st.markdown("<div class='main-card'>", unsafe_allow_html=True)
-            u_left, u_right = st.columns([1, 1.2])
             
-            with u_left:
-                st.markdown("### 📸 1. Your Ingredients")
-                uploaded_file = st.file_uploader("Upload fridge photo", type=['jpg', 'png', 'jpeg'], label_visibility="collapsed")
+            # Single column layout - simpler UI
+            st.markdown("### 📸 Upload Your Ingredients Photo")
+            uploaded_file = st.file_uploader(
+                "Choose an image", 
+                type=['jpg', 'png', 'jpeg'],
+                help="Upload a photo of your ingredients or fridge contents"
+            )
+            
+            if uploaded_file:
+                img = Image.open(uploaded_file)
+                st.image(img, caption="Your Ingredients", width='stretch')
+                st.session_state.uploaded_image_path = save_uploaded_file(uploaded_file)
                 
-                if uploaded_file:
-                    img = Image.open(uploaded_file)
-                    st.image(img, caption="Detected Ingredients", use_container_width=True)
+                # Show detected ingredients if available
+                if st.session_state.detected_ingredients:
+                    st.success("✅ Ingredients detected!")
+                    st.markdown(f"**{st.session_state.detected_ingredients}**")
+            
+            st.markdown("---")
+            
+            st.markdown("### ✏️ Your Preferences")
+            
+            # Instructions text area
+            dietary_instructions = st.text_area(
+                "Dietary instructions or preferences", 
+                placeholder="e.g. 'High protein, no dairy, use the chicken first, vegetarian, etc.'", 
+                height=120,
+                key="dietary_instructions"
+            )
+            
+            # Two columns for style and time
+            pref1, pref2 = st.columns(2)
+            
+            with pref1:
+                meal_style = st.selectbox(
+                    "Meal Style", 
+                    ["Balanced", "Muscle Gain", "Weight Loss", "Quick Meal", "Keto", "Vegan", "Low Carb"],
+                    key="meal_style"
+                )
+            
+            with pref2:
+                meal_time = st.number_input(
+                    "Cooking Time (minutes)", 
+                    min_value=1, 
+                    value=30, 
+                    step=1,
+                    key="meal_time",
+                    help="How much time do you have to cook? Enter any number."
+                )
+            
+            st.markdown("---")
+            
+            # Generate button
+            if st.button("✨ Generate Recipe", width='stretch', type="primary"):
+                if uploaded_file and st.session_state.uploaded_image_path:
+                    st.session_state.user_preferences = {
+                        "goal": meal_style,
+                        "instructions": f"{dietary_instructions}. Time available: {meal_time} minutes",
+                        "images": [st.session_state.uploaded_image_path]
+                    }
+                    
+                    with st.spinner("🔍 Analyzing your ingredients..."):
+                        try:
+                            app = initialize_agent()
+                            
+                            # Create initial state as dictionary (LangGraph requirement)
+                            initial_state = {
+                                "current_conversation_input": {
+                                    "goal": st.session_state.user_preferences["goal"],
+                                    "instructions": st.session_state.user_preferences["instructions"],
+                                    "images": st.session_state.user_preferences["images"]
+                                }
+                            }
+                            
+                            config = {"configurable": {"thread_id": st.session_state.thread_id}}
+                            result = app.invoke(initial_state, config)
+                            
+                            # Handle dict or object response
+                            if not isinstance(result, dict):
+                                result = result.model_dump() if hasattr(result, 'model_dump') else result.__dict__
+                            
+                            # Store detected ingredients
+                            if "image_processing_output" in result and result["image_processing_output"]:
+                                img_output = result["image_processing_output"]
+                                if isinstance(img_output, dict):
+                                    detected = f"{img_output.get('image_name', 'Ingredients')}: {img_output.get('image_description', '')}"
+                                    st.session_state.detected_ingredients = detected
+                                    
+                                    if img_output.get("clarification_needed"):
+                                        st.session_state.clarification_data = img_output.get("clarification_question")
+                                        change_step("clarify")
+                                        st.rerun()
+                                else:
+                                    detected = f"{img_output.image_name}: {img_output.image_description}"
+                                    st.session_state.detected_ingredients = detected
+                                    
+                                    if img_output.clarification_needed:
+                                        st.session_state.clarification_data = img_output.clarification_question
+                                        change_step("clarify")
+                                        st.rerun()
+                            
+                            # Check for recipe
+                            if "meal_recipe" in result and result["meal_recipe"]:
+                                st.session_state.recipe_data = result["meal_recipe"]
+                                change_step("recipe")
+                                st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"⚠️ Error: {str(e)}")
+                            if "RESOURCE_EXHAUSTED" in str(e):
+                                st.warning("🔄 API quota exceeded. Please wait a moment and try again, or switch to gemini-1.5-pro in the code.")
                 else:
-                    st.info("Upload a photo to see the preview.")
-
-            with u_right:
-                st.markdown("### ✍️ 2. Preferences")
-                st.text_area("Dietary instructions", placeholder="e.g. 'High protein, no dairy, use the chicken first.'", height=150)
-                
-                g1, g2 = st.columns(2)
-                with g1: st.selectbox("Style", ["Muscle Gain", "Weight Loss", "Quick Meal"])
-                with g2: st.select_slider("Time", ["15m", "30m", "60m"])
-
-            st.write("---")
-            if st.button("✨ Craft My Recipe", use_container_width=True, type="primary"):
-                if uploaded_file:
-                    change_step("clarify")
-                    st.rerun()
-                else:
-                    st.warning("Please upload a photo first!")
+                    st.warning("📷 Please upload a photo first!")
+            
             st.markdown("</div>", unsafe_allow_html=True)
 
-# --- 6. CLARIFY STATE (INTERRUPT) ---
+# --- 6. CLARIFY PAGE ---
 elif st.session_state.step == "clarify":
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("## 🧐 Quick Question")
-        st.image("https://images.unsplash.com/photo-1518977676601-b53f02ac6d31?w=400", width=200)
-        st.info("The AI detected something that looks like **Potatoes**, but it's a bit blurry.")
-        st.text_input("Please clarify:", placeholder="e.g. They are Sweet Potatoes")
         
-        if st.button("Generate Recipe →", use_container_width=True, type="primary"):
-            change_step("recipe")
-            st.rerun()
+        if st.session_state.uploaded_image_path:
+            st.image(st.session_state.uploaded_image_path, width=400)
+        
+        if st.session_state.detected_ingredients:
+            st.info(f"**Detected:** {st.session_state.detected_ingredients}")
+        
+        if st.session_state.clarification_data:
+            if isinstance(st.session_state.clarification_data, dict):
+                question = st.session_state.clarification_data.get("question", "Could you provide more details?")
+            else:
+                question = st.session_state.clarification_data.question if hasattr(st.session_state.clarification_data, "question") else "Could you provide more details?"
+            st.warning(f"**{question}**")
+        
+        clarification_response = st.text_input("Your answer:", placeholder="e.g. They are Sweet Potatoes")
+        
+        if st.button("Generate Recipe →", width='stretch', type="primary"):
+            if clarification_response:
+                with st.spinner("🍳 Generating your recipe..."):
+                    try:
+                        app = initialize_agent()
+                        config = {"configurable": {"thread_id": st.session_state.thread_id}}
+                        
+                        result = app.invoke({"text": clarification_response}, config)
+                        
+                        if not isinstance(result, dict):
+                            result = result.model_dump() if hasattr(result, 'model_dump') else result.__dict__
+                        
+                        if "meal_recipe" in result and result["meal_recipe"]:
+                            st.session_state.recipe_data = result["meal_recipe"]
+                            change_step("recipe")
+                            st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"⚠️ Error: {str(e)}")
+            else:
+                st.warning("Please provide an answer!")
 
-# --- 7. RECIPE STATE (FINAL RESULT) ---
+# --- 7. RECIPE PAGE ---
 elif st.session_state.step == "recipe":
-    st.markdown("<h1 style='text-align: center; font-family: Playfair Display;'>Mediterranean Protein Sauté</h1>", unsafe_allow_html=True)
+    recipe = st.session_state.recipe_data
     
-    st.markdown('<div class="main-card">', unsafe_allow_html=True)
-    r_left, r_right = st.columns([1, 1.5])
+    # Handle dict or object
+    if isinstance(recipe, dict):
+        meal_name = recipe.get("meal_name", "Your Custom Recipe")
+        meal_description = recipe.get("meal_description")
+        duration = recipe.get("duration_of_the_meal", "N/A")
+        what_you_have = recipe.get("what_you_have", [])
+        what_you_need = recipe.get("what_you_need_to_buy", [])
+        cooking_steps = recipe.get("cooking_steps", [])
+    else:
+        meal_name = recipe.meal_name or "Your Custom Recipe"
+        meal_description = recipe.meal_description
+        duration = recipe.duration_of_the_meal or "N/A"
+        what_you_have = recipe.what_you_have or []
+        what_you_need = recipe.what_you_need_to_buy or []
+        cooking_steps = recipe.cooking_steps or []
     
-    with r_left:
-        st.image("https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600", use_container_width=True)
+    if recipe:
+        st.markdown(f"<h1 style='text-align: center; font-family: Playfair Display;'>{meal_name}</h1>", unsafe_allow_html=True)
         
-        st.markdown("### 📦 In Your Kitchen")
-        st.markdown('<span class="pill">Chicken Breast</span><span class="pill">Fresh Spinach</span><span class="pill">Garlic Cloves</span>', unsafe_allow_html=True)
+        st.markdown('<div class="main-card">', unsafe_allow_html=True)
+        r_left, r_right = st.columns([1, 1.5])
         
-        st.markdown("### 🛒 Grab from Store")
-        st.markdown("""
-            <p class='store-item'>• Heavy Cream (for the sauce)</p>
-            <p class='store-item'>• Shredded Parmesan</p>
-            <p class='store-item'>• Fresh Lemon</p>
-        """, unsafe_allow_html=True)
+        with r_left:
+            if st.session_state.uploaded_image_path:
+                st.image(st.session_state.uploaded_image_path, width='stretch')
+            
+            if meal_description:
+                st.markdown(f"*{meal_description}*")
+            
+            st.markdown(f"**⏱️ Duration:** {duration}")
+            
+            st.markdown("### 📦 In Your Kitchen")
+            if what_you_have:
+                pills_html = ''.join([f'<span class="pill">{item}</span>' for item in what_you_have])
+                st.markdown(pills_html, unsafe_allow_html=True)
+            else:
+                st.info("Using ingredients from your photo")
+            
+            st.markdown("### 🛒 Shopping List")
+            if what_you_need:
+                store_items = ''.join([f"<p class='store-item'>• {item}</p>" for item in what_you_need])
+                st.markdown(store_items, unsafe_allow_html=True)
+            else:
+                st.success("✅ You have everything!")
 
-    with r_right:
-        st.markdown("### 🍳 Cooking Instructions")
-        st.write("**Step 1:** Pat chicken dry and season with salt and pepper.")
-        st.write("**Step 2:** Sauté garlic in a hot pan, then add chicken for 6-8 mins.")
-        st.write("**Step 3:** Stir in the cream and parmesan from the store until thickened.")
-        st.write("**Step 4:** Toss in spinach until wilted. Squeeze lemon to finish.")
-        
-        st.divider()
-        
-        # --- FUNCTIONAL BUTTONS ---
-        b1, b2 = st.columns(2)
-        with b1:
-            if st.button("✅ Approve Recipe", use_container_width=True, type="primary"):
-                st.balloons()
-                st.success("Recipe saved to your meal plan!")
-        with b2:
-            # REJECT BUTTON: Resets the state back to input
-            if st.button("❌ Reject / Restart", use_container_width=True):
-                change_step("input")
-                st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-
-
+        with r_right:
+            st.markdown("### 🍳 Cooking Instructions")
+            if cooking_steps:
+                for idx, step in enumerate(cooking_steps, 1):
+                    st.write(f"**Step {idx}:** {step}")
+            else:
+                st.info("No cooking steps provided.")
+            
+            st.divider()
+            
+            b1, b2, b3 = st.columns(3)
+            
+            with b1:
+                if st.button("✅ Save Recipe", width='stretch', type="primary"):
+                    st.balloons()
+                    st.success("Recipe saved!")
+            
+            with b2:
+                if st.button("🔄 Try Different", width='stretch'):
+                    with st.spinner("Creating new recipe..."):
+                        try:
+                            app = initialize_agent()
+                            
+                            new_state = {
+                                "current_conversation_input": {
+                                    "goal": st.session_state.user_preferences["goal"],
+                                    "instructions": st.session_state.user_preferences["instructions"] + " Create a completely different recipe.",
+                                    "images": st.session_state.user_preferences["images"]
+                                }
+                            }
+                            
+                            new_thread = f"thread_{st.session_state.get('counter', 0) + 1}"
+                            config = {"configurable": {"thread_id": new_thread}}
+                            
+                            result = app.invoke(new_state, config)
+                            
+                            if not isinstance(result, dict):
+                                result = result.model_dump() if hasattr(result, 'model_dump') else result.__dict__
+                            
+                            if "meal_recipe" in result and result["meal_recipe"]:
+                                st.session_state.recipe_data = result["meal_recipe"]
+                                st.session_state.counter = st.session_state.get('counter', 0) + 1
+                                st.rerun()
+                                
+                        except Exception as e:
+                            st.error(f"Error: {str(e)}")
+            
+            with b3:
+                if st.button("🏠 Start Over", width='stretch'):
+                    st.session_state.step = "input"
+                    st.session_state.uploaded_image_path = None
+                    st.session_state.user_preferences = {}
+                    st.session_state.clarification_data = None
+                    st.session_state.recipe_data = None
+                    st.session_state.detected_ingredients = None
+                    st.session_state.thread_id = f"thread_{st.session_state.get('counter', 0) + 1}"
+                    st.rerun()
+                
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.error("No recipe available.")
+        if st.button("← Back"):
+            change_step("input")
+            st.rerun()
