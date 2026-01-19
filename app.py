@@ -5,6 +5,7 @@ import tempfile
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from MealAgent.execution import MealPlannerAgent
+from langgraph.types import Command
 
 # Load environment variables from .env file
 load_dotenv()
@@ -28,6 +29,9 @@ def initialize_agent():
     
     agent = MealPlannerAgent(model)
     return agent.build_graph()
+
+
+app = initialize_agent()
 
 # --- 1. PAGE CONFIG ---
 st.set_page_config(page_title="ChefGPT Luxe", page_icon="🍳", layout="wide")
@@ -174,7 +178,7 @@ if st.session_state.step == "input":
                     
                     with st.spinner("🔍 Analyzing your ingredients..."):
                         try:
-                            app = initialize_agent()
+                            
                             
                             # Create initial state as dictionary (LangGraph requirement)
                             initial_state = {
@@ -252,10 +256,17 @@ elif st.session_state.step == "clarify":
             if clarification_response:
                 with st.spinner("🍳 Generating your recipe..."):
                     try:
-                        app = initialize_agent()
-                        config = {"configurable": {"thread_id": st.session_state.thread_id}}
-                        
-                        result = app.invoke({"text": clarification_response}, config)
+
+                        config = {"configurable": {"thread_id": st.session_state.thread_id or "thread_1"}}
+
+                        response= {
+                            "type":"text",
+                            "text":clarification_response
+                        }
+
+                        print( "Clarification response:", response )
+
+                        result = app.invoke(Command(resume=response), config)
                         
                         if not isinstance(result, dict):
                             result = result.model_dump() if hasattr(result, 'model_dump') else result.__dict__
@@ -340,7 +351,6 @@ elif st.session_state.step == "recipe":
                 if st.button("🔄 Try Different", width='stretch'):
                     with st.spinner("Creating new recipe..."):
                         try:
-                            app = initialize_agent()
                             
                             new_state = {
                                 "current_conversation_input": {
