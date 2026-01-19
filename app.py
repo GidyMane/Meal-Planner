@@ -3,7 +3,7 @@ from PIL import Image
 import os
 import tempfile
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.chat_models import init_chat_model
 from MealAgent.execution import MealPlannerAgent
 
 # Load environment variables from .env file
@@ -13,16 +13,17 @@ load_dotenv()
 @st.cache_resource
 def initialize_agent():
     """Initialize the MealPlannerAgent with Gemini model"""
+    # Get API key from environment
     api_key = os.getenv('GOOGLE_API_KEY')
     
     if not api_key:
         raise ValueError("GOOGLE_API_KEY not found. Please check your .env file.")
     
-    # Use the correct model name with version prefix
-    model = ChatGoogleGenerativeAI(
-        model="models/gemini-1.5-flash",  # Added "models/" prefix
+    # Use init_chat_model with explicit provider
+    model = init_chat_model(
+        "google_genai:gemini-3-flash-preview",  
         temperature=0.7,
-        google_api_key=api_key
+        api_key=api_key
     )
     
     agent = MealPlannerAgent(model)
